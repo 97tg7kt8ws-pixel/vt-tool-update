@@ -1,5 +1,5 @@
 {
-  "version": "1.7",
-  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/1.7/VTTool_1.7.exe",
-  "note": "独立更新通道初始化；固定显示Vinted账号导入框，并支持自动版本检查。"
+  "version": "1.9",
+  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/1.9/VTTool_1.9.exe",
+  "note": "修复Vinted店铺商品售出提醒弹窗不显示并导致软件卡死的问题；新增软件内非阻塞提醒，Windows提示框不再锁定主界面。"
 }
