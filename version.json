@@ -1,5 +1,5 @@
 {
-  "version": "1.9",
-  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/1.9/VTTool_1.9.exe",
-  "note": "修复Vinted店铺商品售出提醒弹窗不显示并导致软件卡死的问题；新增软件内非阻塞提醒，Windows提示框不再锁定主界面。"
+  "version": "2.0",
+  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/2.0/VTTool_2.0.exe",
+  "note": "固定使用专属在线更新通道并自动清除旧地址缓存，解决点击检查更新仍误报1.8为最新版的问题；保留Vinted固定导入框及售出提醒防卡死修复。"
 }
