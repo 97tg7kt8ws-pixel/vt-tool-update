@@ -76,7 +76,7 @@ jobs:
         shell: pwsh
         working-directory: clone_src
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name "VintedHelper" --collect-all qtawesome --hidden-import PyQt6.sip --hidden-import flask --hidden-import flask_cors --add-data "flags;flags" launcher.py
+          pyinstaller --noconfirm --clean --onefile --windowed --name "VintedHelper" --collect-all qtawesome --hidden-import PyQt6.sip --hidden-import flask --hidden-import flask_cors --add-data "flags;flags" --add-data "assets;assets" --add-data "cookie_helper;cookie_helper" --icon "assets/Dragonflycap.ico" launcher.py
 
       - name: Prepare artifact
         shell: pwsh
