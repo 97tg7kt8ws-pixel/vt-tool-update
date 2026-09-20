@@ -25,9 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
-
-      - name: Restore source archive
+- name: Restore source archive
         shell: pwsh
         run: |
           $b64 = (Get-Content "clone_build/source.b64" -Raw).Trim()
