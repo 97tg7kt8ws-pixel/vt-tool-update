@@ -1,0 +1,96 @@
+name: Build Vinted Clone EXE
+
+on:
+  push:
+    branches:
+      - vinted-clone-build
+    paths:
+      - "clone_build/**"
+      - ".github/workflows/build-vinted-clone.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Restore source archive
+        shell: pwsh
+        run: |
+          $b64 = (Get-Content "clone_build/source.b64" -Raw).Trim()
+          [IO.File]::WriteAllBytes("clone_source.zip", [Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Force -Path "clone_src" | Out-Null
+          Expand-Archive -Path "clone_source.zip" -DestinationPath "clone_src" -Force
+          Get-ChildItem -Recurse clone_src | Select-Object FullName,Length
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r clone_src/requirements.txt
+          python -m pip install pyinstaller
+
+      - name: Add crash-safe launcher
+        shell: pwsh
+        run: |
+          @'
+          import os
+          import sys
+          import traceback
+
+          def _show_fatal(exc):
+              text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+              try:
+                  base = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else __file__)
+                  with open(os.path.join(base, "Vinted助手_error.log"), "a", encoding="utf-8") as f:
+                      f.write(text + "\n")
+              except Exception:
+                  pass
+              try:
+                  from PyQt6.QtWidgets import QApplication, QMessageBox
+                  app = QApplication.instance() or QApplication(sys.argv)
+                  QMessageBox.critical(None, "Vinted 助手 - 启动失败", "程序启动时发生错误。\n\n" + text[-3500:])
+              except Exception:
+                  pass
+
+          try:
+              import main
+              main.main()
+          except Exception as exc:
+              _show_fatal(exc)
+          '@ | Set-Content -Path "clone_src/launcher.py" -Encoding UTF8
+
+      - name: Build EXE
+        shell: pwsh
+        working-directory: clone_src
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name "VintedHelper" --collect-all qtawesome --hidden-import PyQt6.sip --hidden-import flask --hidden-import flask_cors --add-data "flags;flags" launcher.py
+
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifact" | Out-Null
+          Copy-Item "clone_src/dist/VintedHelper.exe" "artifact/Vinted助手.exe"
+          Get-FileHash "artifact/Vinted助手.exe" -Algorithm SHA256 | Format-List | Out-File "artifact/SHA256.txt" -Encoding utf8
+          Get-Item "artifact/Vinted助手.exe" | Select-Object Name,Length,LastWriteTime
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vinted助手-Windows
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 7
