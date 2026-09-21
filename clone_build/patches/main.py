@@ -183,11 +183,13 @@ class MainWindow(QMainWindow):
         self.current_user_id = user_info.get('user_id')
         return user_info
 
-    def handle_report_item(self,item_id):
+    def handle_report_item(self,item_or_id):
         user_info=self._report_login_ready()
         if not user_info:
             return
-        item=self._find_item_by_id(item_id)
+        # New cards emit the complete item object so a report never depends on
+        # accumulated_items/history cache timing. Keep id lookup for old cards.
+        item=item_or_id if isinstance(item_or_id,dict) else self._find_item_by_id(item_or_id)
         if not item:
             self.toast.show_message('未找到该商品信息', False); return
         self.toast.show_message('正在读取 Vinted 当前举报原因…', True)
