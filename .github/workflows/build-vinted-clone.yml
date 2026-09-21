@@ -35,6 +35,15 @@ jobs:
           Expand-Archive -Path "clone_source.zip" -DestinationPath "clone_src" -Force
           Get-ChildItem -Recurse clone_src | Select-Object FullName,Length
 
+      - name: Apply report-flow patch
+        shell: pwsh
+        run: |
+          Copy-Item "clone_build/patches/api_client.py" "clone_src/api/client.py" -Force
+          Copy-Item "clone_build/patches/dialog.py" "clone_src/ui/dialog.py" -Force
+          Copy-Item "clone_build/patches/main.py" "clone_src/main.py" -Force
+          Copy-Item "clone_build/patches/report_worker.py" "clone_src/workers/report_worker.py" -Force
+          python -m compileall -q clone_src
+
       - name: Install dependencies
         shell: pwsh
         run: |
