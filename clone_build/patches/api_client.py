@@ -464,70 +464,100 @@ class VintedAPI:
         except Exception:
             return None
 
+    def _flatten_report_reasons(self, nodes, prefix=''):
+        """Flatten Vinted's live report-reason tree into selectable leaf reasons."""
+        out=[]
+        if isinstance(nodes,dict):
+            nodes=[nodes]
+        if not isinstance(nodes,list):
+            return out
+        for node in nodes:
+            if not isinstance(node,dict):
+                continue
+            rid=node.get('id')
+            title=str(node.get('title') or node.get('name') or '').strip()
+            path=(prefix+' > '+title).strip(' >') if title else prefix
+
+            # Vinted has used several names for nested report reasons over time.
+            child_lists=[]
+            for key in ('report_reasons','children','sub_reasons','reasons','subreport_reasons','report_reason_children'):
+                val=node.get(key)
+                if isinstance(val,list) and val:
+                    child_lists.append(val)
+
+            # Defensive scan for nested lists of reason-like dictionaries.
+            if not child_lists:
+                for key,val in node.items():
+                    if key in ('id','title','name','code','subtitle','report_reason_id','entity_type'):
+                        continue
+                    if isinstance(val,list) and val and all(isinstance(x,dict) for x in val):
+                        if any(('id' in x and ('title' in x or 'name' in x)) for x in val):
+                            child_lists.append(val)
+
+            if child_lists:
+                for children in child_lists:
+                    out.extend(self._flatten_report_reasons(children,path))
+                continue
+
+            try:
+                rid_int=int(rid)
+            except Exception:
+                rid_int=None
+            if rid_int and title:
+                out.append({
+                    'id':rid_int,
+                    'label':path or title,
+                    'title':title,
+                    'code':node.get('code') or '',
+                    'raw':node
+                })
+        return out
+
     def get_report_reasons(self, item_or_id):
-        """Read the live reason list from Vinted's current web report flow.
-
-        This avoids the stale numeric reason IDs embedded in older builds.
-        It does not submit a report.
-        """
-        entry=self._extract_report_entry(item_or_id)
-        if not entry.get('success'):
-            return entry
+        """Fetch the current report-reason tree from Vinted's live API."""
+        item_id,item_url,seller_id=self._report_item_meta(item_or_id)
+        if not item_id:
+            return {'success':False,'message':'缺少商品 ID'}
+        if not seller_id:
+            return {'success':False,'message':'缺少商品卖家 ID，无法读取举报原因'}
+        url=f'https://www.{self.domain}/api/v2/report_reasons/item'
         try:
-            r=self.session.get(entry['entry_url'],headers=self._html_headers(entry.get('item_url')),timeout=12,allow_redirects=True)
+            r=self.session.get(
+                url,
+                params={'offender_id':int(seller_id)},
+                headers={
+                    'User-Agent':self.session.headers.get('User-Agent','Mozilla/5.0'),
+                    'Accept':'application/json, text/plain, */*',
+                    'Referer':item_url or f'https://www.{self.domain}/items/{item_id}',
+                },
+                timeout=12,
+                allow_redirects=True
+            )
+            if r.status_code==401:
+                return {'success':False,'message':'登录状态已失效 (HTTP 401)'}
             if r.status_code>=400:
-                return {'success':False,'message':f'加载当前举报原因失败 (HTTP {r.status_code})'}
-            parser=_LinkCollector(); parser.feed(r.text or '')
-            current_parent=self._reason_id_from_url(entry['entry_url'])
-            seen=set(); reasons=[]
-            for link in parser.links:
-                href=unescape(link.get('href') or '')
-                full=urljoin(r.url,href)
-                if '/help/new' not in full and '/admin_alert/new' not in full:
-                    continue
-                rid=self._reason_id_from_url(full)
-                if not rid or rid==current_parent or rid in seen:
-                    continue
-                text=' '.join((link.get('text') or link.get('title') or '').split())
-                if not text or len(text)>120:
-                    continue
-                seen.add(rid); reasons.append({'id':rid,'label':text,'url':full})
-
-            # Current Vinted variants often serialize routes/reason objects inside
-            # Next.js/RSC scripts rather than normal anchors. Decode those payloads
-            # and recover the live reason ids and nearby human-facing labels.
+                detail=(r.text or '').strip().replace('\n',' ')[:180]
+                return {'success':False,'message':f'读取举报原因失败 (HTTP {r.status_code})'+(f'：{detail}' if detail else '')}
+            data=r.json()
+            if not isinstance(data,dict):
+                return {'success':False,'message':'举报原因接口返回格式异常'}
+            if data.get('code') not in (None,0):
+                return {'success':False,'message':f"举报原因接口返回 code={data.get('code')}"}
+            roots=data.get('report_reasons') or []
+            reasons=self._flatten_report_reasons(roots)
             if not reasons:
-                recovered=self._extract_serialized_report_reasons(r.text or '', r.url, current_parent)
-                for rec in recovered:
-                    rid=int(rec.get('id'))
-                    if rid in seen: continue
-                    seen.add(rid); reasons.append(rec)
-
-            # Keep the older JSON-object fallback for legacy page variants.
-            if not reasons:
-                patterns=[
-                    r'"reason_id"\s*:\s*(\d+)\s*,\s*"(?:title|name|label)"\s*:\s*"([^"\\]{2,120})"',
-                    r'"(?:title|name|label)"\s*:\s*"([^"\\]{2,120})"\s*,\s*"reason_id"\s*:\s*(\d+)',
-                ]
-                for idx,pat in enumerate(patterns):
-                    for m in re.finditer(pat,r.text or '',re.I):
-                        if idx==0: rid,txt=int(m.group(1)),m.group(2)
-                        else: txt,rid=m.group(1),int(m.group(2))
-                        if rid==current_parent or rid in seen: continue
-                        txt=bytes(txt,'utf-8').decode('unicode_escape','ignore') if '\\u' in txt else txt
-                        txt=' '.join(unescape(txt).split())
-                        if txt:
-                            seen.add(rid); reasons.append({'id':rid,'label':txt,'url':''})
-
-            if not reasons:
-                # Diagnostic detail helps distinguish login/challenge shells from
-                # a genuine layout change without ever reusing stale hard-coded ids.
-                title_m=re.search(r'<title[^>]*>(.*?)</title>',r.text or '',re.I|re.S)
-                title=' '.join(unescape(title_m.group(1)).split())[:80] if title_m else ''
-                return {'success':False,'message':'Vinted 当前举报原因仍未能解析'+(f'（页面: {title}）' if title else '')+'；已停止提交，避免使用过期原因 ID。'}
-            return {'success':True,'reasons':reasons,'entry_url':entry['entry_url'],'item_url':entry.get('item_url','')}
+                return {'success':False,'message':'Vinted 举报原因接口未返回可用的最终原因'}
+            return {
+                'success':True,
+                'reasons':reasons,
+                'item_url':item_url,
+                'seller_id':seller_id,
+                'raw':data,
+            }
+        except ValueError as e:
+            return {'success':False,'message':f'举报原因 JSON 解析失败: {e}'}
         except requests.RequestException as e:
-            return {'success':False,'message':f'加载当前举报原因失败: {e}'}
+            return {'success':False,'message':f'读取举报原因失败: {e}'}
 
     def _resolve_reason_page(self, item_or_id, reason_id):
         live=self.get_report_reasons(item_or_id)
@@ -554,20 +584,25 @@ class VintedAPI:
         markers=("we've received your report",'we have received your report','report received')
         if any(m in text for m in markers):
             return True
-        ctype=(response.headers.get('content-type') or '').lower()
-        if 'json' in ctype:
-            try:
-                data=response.json()
-                if isinstance(data,dict):
-                    if data.get('success') is True:
-                        return True
-                    alert=data.get('admin_alert')
-                    if isinstance(alert,dict) and alert.get('id'):
-                        return True
-                    if response.status_code==201 and data.get('id'):
-                        return True
-            except Exception:
-                pass
+        try:
+            data=response.json()
+            # Current Vinted web flow observed Sep 2026 returns [{"code": 0}]
+            # after a successful admin_alert submission.
+            if isinstance(data,list) and data:
+                if all(isinstance(x,dict) for x in data) and any(x.get('code')==0 for x in data):
+                    return True
+            if isinstance(data,dict):
+                if data.get('code')==0:
+                    return True
+                if data.get('success') is True:
+                    return True
+                alert=data.get('admin_alert')
+                if isinstance(alert,dict) and alert.get('id'):
+                    return True
+                if response.status_code==201 and data.get('id'):
+                    return True
+        except Exception:
+            pass
         return False
 
     def _submit_report_form(self, reason_page_url, referer, message=''):
@@ -634,33 +669,67 @@ class VintedAPI:
         return {'success':False,'message':'举报提交失败'}
 
     def report_item(self,item_or_id,user_id,reason_id,message=''):
-        """Submit one explicitly confirmed report through Vinted's live web flow.
-
-        The browser extension remains a cookie-only helper.  The desktop app
-        reads the current report entry/reason pages with that authenticated
-        session, submits the official form when available, and only marks the
-        operation successful after a verifiable Vinted acknowledgement.
-        """
-        item_id,_,_=self._report_item_meta(item_or_id)
+        """Submit one explicitly confirmed item report using Vinted's live API."""
+        item_id,item_url,seller_id=self._report_item_meta(item_or_id)
         if not item_id or not user_id:
             return {'success':False,'message':'缺少商品 ID 或登录用户 ID'}
+
+        # Validate the selected reason against the current live reason tree so
+        # stale hard-coded ids can never be submitted.
+        live=self.get_report_reasons(item_or_id)
+        if not live.get('success'):
+            return live
+        valid_ids={int(x.get('id')) for x in live.get('reasons',[]) if x.get('id') is not None}
         try:
-            page=self._resolve_reason_page(item_or_id,reason_id)
-            if not page.get('success'):
-                return page
-            form_result=self._submit_report_form(page['url'],page.get('referer'),message)
-            if form_result.get('success'):
-                return form_result
-            # If the current page is a JS-only shell, try the recovered API
-            # endpoint with the *live* reason ID, but still require a concrete
-            # success body/204 instead of trusting a generic 200 page.
-            if '没有发现可提交表单' in str(form_result.get('message','')):
-                fallback=self._submit_legacy_api_verified(item_id,user_id,reason_id,message)
-                if fallback.get('success'):
-                    return fallback
-                return {'success':False,'message':form_result.get('message','')+'；'+fallback.get('message','')}
-            return form_result
-        except requests.RequestException as e:
-            return {'success':False,'message':f'Request error: {e}'}
-        except Exception as e:
-            return {'success':False,'message':f'Unexpected error: {e}'}
+            reason_id=int(reason_id)
+        except Exception:
+            return {'success':False,'message':'无效的举报原因 ID'}
+        if reason_id not in valid_ids:
+            return {'success':False,'message':f'当前 Vinted 举报原因中不存在 ID {reason_id}，请重新选择'}
+
+        url=f'https://www.{self.domain}/api/v2/users/{int(user_id)}/admin_alerts'
+        payload={'admin_alert':{
+            'ref_type':'item',
+            'ref_id':int(item_id),
+            'report_reason_id':reason_id,
+            'message':message or ''
+        }}
+
+        for attempt in range(2):
+            csrf_token=self.get_csrf_token()
+            if not csrf_token:
+                return {'success':False,'message':'无法获取 CSRF Token，请重新同步 Cookie'}
+            headers={
+                'Content-Type':'application/json',
+                'Accept':'application/json, text/plain, */*',
+                'x-csrf-token':csrf_token,
+                'User-Agent':self.session.headers.get('User-Agent','Mozilla/5.0'),
+                'Origin':f'https://www.{self.domain}',
+                'Referer':item_url or f'https://www.{self.domain}/items/{item_id}',
+            }
+            try:
+                response=self.session.post(url,headers=headers,json=payload,timeout=12,allow_redirects=True)
+            except requests.RequestException as e:
+                return {'success':False,'message':f'举报请求失败: {e}'}
+
+            if response.status_code in (401,403,422) and attempt==0:
+                self._csrf_token=None
+                self._csrf_token_time=0
+                continue
+
+            if self._response_report_success(response):
+                return {
+                    'success':True,
+                    'message':f'Vinted 已确认收到举报 (HTTP {response.status_code}, code=0)',
+                    'final_url':response.url,
+                    'status_code':response.status_code,
+                }
+
+            detail=(response.text or '').strip().replace('\n',' ')[:260]
+            return {
+                'success':False,
+                'message':f'Vinted 未返回成功确认 (HTTP {response.status_code})'+(f'：{detail}' if detail else '')
+            }
+
+        return {'success':False,'message':'举报提交失败'}
+
