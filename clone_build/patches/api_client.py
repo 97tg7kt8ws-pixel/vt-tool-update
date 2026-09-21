@@ -687,7 +687,8 @@ class VintedAPI:
         if reason_id not in valid_ids:
             return {'success':False,'message':f'当前 Vinted 举报原因中不存在 ID {reason_id}，请重新选择'}
 
-        url=f'https://www.{self.domain}/api/v2/users/{int(user_id)}/admin_alerts'
+        site=f'https://www.{self.domain}'
+        url=f'{site}/api/v2/users/{int(user_id)}/admin_alerts'
         payload={'admin_alert':{
             'ref_type':'item',
             'ref_id':int(item_id),
@@ -695,18 +696,53 @@ class VintedAPI:
             'message':message or ''
         }}
 
+        # Match the successful browser flow: the POST originates from the
+        # final /admin_alert/new confirmation page, not directly from the item.
+        ref_path=urlparse(item_url or '').path or f'/items/{item_id}'
+        report_referer=site+'/admin_alert/new?'+urlencode({
+            'reason_id':reason_id,
+            'ref_id':int(item_id),
+            'ref_type':'item',
+            'ref_url':ref_path,
+            'offender_id':int(seller_id) if seller_id else ''
+        })
+
         for attempt in range(2):
             csrf_token=self.get_csrf_token()
             if not csrf_token:
                 return {'success':False,'message':'无法获取 CSRF Token，请重新同步 Cookie'}
+
+            # X-Anon-Id is present on the real web request. Prefer the browser
+            # cookie snapshot, then the catalogue identity captured earlier.
+            anon_id=''
+            try:
+                anon_id=self.session.cookies.get('anon_id') or ''
+            except Exception:
+                try:
+                    for ck in self.session.cookies:
+                        if getattr(ck,'name','')=='anon_id':
+                            anon_id=getattr(ck,'value','') or ''
+                            break
+                except Exception:
+                    anon_id=''
+            anon_id=anon_id or getattr(self,'_anon_id','') or ''
+
             headers={
                 'Content-Type':'application/json',
                 'Accept':'application/json, text/plain, */*',
+                'Accept-Language':'en-GB,en;q=0.9',
+                'Locale':self._market_locale(),
                 'x-csrf-token':csrf_token,
                 'User-Agent':self.session.headers.get('User-Agent','Mozilla/5.0'),
-                'Origin':f'https://www.{self.domain}',
-                'Referer':item_url or f'https://www.{self.domain}/items/{item_id}',
+                'Origin':site,
+                'Referer':report_referer,
+                'Priority':'u=3',
+                'Sec-Fetch-Dest':'empty',
+                'Sec-Fetch-Mode':'cors',
+                'Sec-Fetch-Site':'same-origin',
             }
+            if anon_id:
+                headers['X-Anon-Id']=anon_id
             try:
                 response=self.session.post(url,headers=headers,json=payload,timeout=12,allow_redirects=True)
             except requests.RequestException as e:
