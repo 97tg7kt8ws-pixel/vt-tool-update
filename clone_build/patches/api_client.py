@@ -386,6 +386,77 @@ class VintedAPI:
             return {'success':False,'message':f'读取举报入口失败: {e}'}
 
     @staticmethod
+    def _report_html_variants(text):
+        """Return decoded variants of Vinted's HTML/Next.js/RSC payload."""
+        raw=str(text or '')
+        vals=[raw]
+        cur=raw
+        for _ in range(3):
+            nxt=unescape(cur)
+            nxt=nxt.replace('\\/','/').replace('\\u0026','&').replace('\\u003d','=').replace('\\u002f','/').replace('\\u002F','/')
+            nxt=nxt.replace('\\u003f','?').replace('\\u003F','?').replace('\\u0025','%')
+            if nxt==cur: break
+            vals.append(nxt); cur=nxt
+        out=[]
+        for v in vals:
+            if v not in out: out.append(v)
+        return out
+
+    @staticmethod
+    def _guess_reason_label(blob, start, end, rid):
+        window=blob[max(0,start-320):min(len(blob),end+320)]
+        # Prefer human-readable quoted strings around the reason URL/object.
+        candidates=[]
+        for m in re.finditer(r'["\']([^"\']{3,100})["\']', window):
+            s=' '.join(unescape(m.group(1)).split())
+            low=s.lower()
+            if not s or str(rid) in s or 'reason_id' in low or '/help/' in low or '/admin_alert/' in low:
+                continue
+            if any(x in low for x in ('ref_id','ref_type','ref_url','offender_id','component','children','href','class','button','route','query','http')):
+                continue
+            if re.fullmatch(r'[a-z0-9_./:=?&%-]+', low):
+                continue
+            alpha=sum(ch.isalpha() for ch in s)
+            if alpha < 3:
+                continue
+            # Labels tend to be short title-like strings.
+            score=0
+            if 4 <= len(s) <= 60: score+=3
+            if any(ch.isspace() for ch in s): score+=2
+            if s[0].isupper(): score+=1
+            candidates.append((score,s))
+        if candidates:
+            candidates.sort(key=lambda x:(-x[0],len(x[1])))
+            return candidates[0][1]
+        return f'Vinted reason {rid}'
+
+    def _extract_serialized_report_reasons(self, html, base_url, current_parent=None):
+        seen=set(); reasons=[]
+        url_pat=re.compile(r'(?:(?:https?:)?//[^"\'<>\\\s]+)?/(?:help|admin_alert)/new\?[^"\'<>\\\s]+', re.I)
+        rid_pat=re.compile(r'(?:reason_id|reasonId)["\'=: ]{1,8}(\d{1,6})', re.I)
+        for blob in self._report_html_variants(html):
+            for m in url_pat.finditer(blob):
+                raw=m.group(0).rstrip('),]}')
+                full=urljoin(base_url, raw)
+                rid=self._reason_id_from_url(full)
+                if not rid or rid==current_parent or rid in seen:
+                    continue
+                label=self._guess_reason_label(blob,m.start(),m.end(),rid)
+                seen.add(rid); reasons.append({'id':rid,'label':label,'url':full})
+            # RSC/Next state sometimes stores reasonId separately from the route.
+            for m in rid_pat.finditer(blob):
+                rid=int(m.group(1))
+                if not rid or rid==current_parent or rid in seen:
+                    continue
+                label=self._guess_reason_label(blob,m.start(),m.end(),rid)
+                # Only accept a bare serialized id when nearby content looks like a
+                # human-facing reason rather than an arbitrary analytics number.
+                if label.startswith('Vinted reason '):
+                    continue
+                seen.add(rid); reasons.append({'id':rid,'label':label,'url':''})
+        return reasons
+
+    @staticmethod
     def _reason_id_from_url(url):
         try:
             val=(parse_qs(urlparse(url).query).get('reason_id') or [''])[0]
@@ -422,8 +493,17 @@ class VintedAPI:
                     continue
                 seen.add(rid); reasons.append({'id':rid,'label':text,'url':full})
 
-            # Some page variants serialize report reasons in JSON rather than
-            # rendering normal anchors.  Recover those IDs/titles as a fallback.
+            # Current Vinted variants often serialize routes/reason objects inside
+            # Next.js/RSC scripts rather than normal anchors. Decode those payloads
+            # and recover the live reason ids and nearby human-facing labels.
+            if not reasons:
+                recovered=self._extract_serialized_report_reasons(r.text or '', r.url, current_parent)
+                for rec in recovered:
+                    rid=int(rec.get('id'))
+                    if rid in seen: continue
+                    seen.add(rid); reasons.append(rec)
+
+            # Keep the older JSON-object fallback for legacy page variants.
             if not reasons:
                 patterns=[
                     r'"reason_id"\s*:\s*(\d+)\s*,\s*"(?:title|name|label)"\s*:\s*"([^"\\]{2,120})"',
@@ -438,8 +518,13 @@ class VintedAPI:
                         txt=' '.join(unescape(txt).split())
                         if txt:
                             seen.add(rid); reasons.append({'id':rid,'label':txt,'url':''})
+
             if not reasons:
-                return {'success':False,'message':'Vinted 当前举报原因未能解析；已停止提交，避免使用过期原因 ID。'}
+                # Diagnostic detail helps distinguish login/challenge shells from
+                # a genuine layout change without ever reusing stale hard-coded ids.
+                title_m=re.search(r'<title[^>]*>(.*?)</title>',r.text or '',re.I|re.S)
+                title=' '.join(unescape(title_m.group(1)).split())[:80] if title_m else ''
+                return {'success':False,'message':'Vinted 当前举报原因仍未能解析'+(f'（页面: {title}）' if title else '')+'；已停止提交，避免使用过期原因 ID。'}
             return {'success':True,'reasons':reasons,'entry_url':entry['entry_url'],'item_url':entry.get('item_url','')}
         except requests.RequestException as e:
             return {'success':False,'message':f'加载当前举报原因失败: {e}'}
