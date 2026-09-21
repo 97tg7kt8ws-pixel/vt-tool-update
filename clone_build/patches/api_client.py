@@ -302,16 +302,33 @@ class VintedAPI:
             'image_path':photo.get('url'),'likes':item.get('favourite_count',0),'status':status,
             'seller_id':u.get('id'),'seller_avatar':(u.get('photo') or {}).get('url'),'seller_username':u.get('login') or u.get('real_name') or '',
             'seller_feedback_count':u.get('feedback_count',0) or 0,'seller_feedback_reputation':u.get('feedback_reputation',0.0) or 0.0,
-            'url': item.get('url') or (f"https://www.{self.domain}{item.get('path')}" if item.get('path') else (f"https://www.{self.domain}/items/{item.get('id')}" if item.get('id') else '')),
+            'url': self._absolute_item_url(item.get('url') or item.get('path'), item.get('id')),
         }
+
+    def _absolute_item_url(self, raw_url=None, item_id=None):
+        """Normalize Vinted item URLs returned as either absolute URLs or /items/... paths."""
+        site=f'https://www.{self.domain}'
+        raw=str(raw_url or '').strip()
+        if raw:
+            if raw.startswith('//'):
+                return 'https:'+raw
+            if raw.startswith('/'):
+                return urljoin(site+'/', raw)
+            parsed=urlparse(raw)
+            if parsed.scheme in ('http','https') and parsed.netloc:
+                return raw
+            # Defensive fallback for host/path values without a scheme.
+            if raw.startswith('www.') or raw.startswith(self.domain):
+                return 'https://'+raw.lstrip('/')
+        return f'{site}/items/{item_id}' if item_id else ''
 
     def _report_item_meta(self, item_or_id):
         if isinstance(item_or_id, dict):
             item_id=item_or_id.get('id')
-            item_url=item_or_id.get('url') or (f'https://www.{self.domain}/items/{item_id}' if item_id else '')
+            item_url=self._absolute_item_url(item_or_id.get('url'), item_id)
             seller_id=item_or_id.get('seller_id')
         else:
-            item_id=item_or_id; item_url=f'https://www.{self.domain}/items/{item_id}' if item_id else ''; seller_id=None
+            item_id=item_or_id; item_url=self._absolute_item_url(None, item_id); seller_id=None
         try: item_id=int(item_id)
         except Exception: item_id=None
         try: seller_id=int(seller_id) if seller_id not in (None,'') else None
