@@ -1,5 +1,5 @@
 {
-  "version": "2.1",
-  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/2.1/VTTool_2.1.exe",
-  "note": "修复 Vinted 账号查询将接口异常、403 或空响应误判为封号/不存在的问题；新增多接口兼容及公开主页回退。"
+  "version": "2.2",
+  "url": "https://github.com/97tg7kt8ws-pixel/vt-tool-update/releases/download/2.2/VTTool_2.2.exe",
+  "note": "新增昵称固定识别词输入框；生成随机昵称时完整保留识别词，并随机放在昵称前段、中段或后段；留空时保持原随机昵称规则。"
 }
